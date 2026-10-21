@@ -38,6 +38,10 @@ sensor_msgs::PointCloud2 local_map_pcl;
 sensor_msgs::PointCloud2 local_depth_pcl;
 ros::Subscriber odom_sub;
 ros::Subscriber global_map_sub, local_map_sub;
+ros::Subscriber evaluation_dynamic_sub;
+bool evaluation_dynamic_cloud = false;
+ros::Time evaluation_dynamic_stamp, evaluation_rendered_stamp;
+pcl::PointCloud<PointType> evaluation_dynamic_points;
 ros::Timer local_sensing_timer, pose_timer, dynobj_timer;
 
 ros::Time t_init;
@@ -45,7 +49,7 @@ ros::Time t_init;
 bool has_odom(false);
 
 nav_msgs::Odometry odom_;
-Eigen::Matrix4f sensor2body, sensor2world;
+Eigen::Matrix4f sensor2body = Eigen::Matrix4f::Identity(), sensor2world = Eigen::Matrix4f::Identity();
 
 int output_pcd;
 int collisioncheck_enable;
@@ -403,6 +407,18 @@ void rcvOdometryCallbck(const nav_msgs::Odometry& odom)
 
   // convert to cam pose
   sensor2world = body2world * sensor2body;
+  //Codex: Publish the optical-frame pose required by the existing FUEL adapter.
+  geometry_msgs::PoseStamped sensor_pose;
+  sensor_pose.header = odom.header;
+  sensor_pose.pose.position.x = sensor2world(0, 3);
+  sensor_pose.pose.position.y = sensor2world(1, 3);
+  sensor_pose.pose.position.z = sensor2world(2, 3);
+  const Eigen::Quaternionf sensor_orientation(sensor2world.block<3, 3>(0, 0));
+  sensor_pose.pose.orientation.x = sensor_orientation.x();
+  sensor_pose.pose.orientation.y = sensor_orientation.y();
+  sensor_pose.pose.orientation.z = sensor_orientation.z();
+  sensor_pose.pose.orientation.w = sensor_orientation.w();
+  pub_pose.publish(sensor_pose);
 
   // collision check function
   // running time statistics
@@ -572,11 +588,26 @@ void multiOdometryCallbck(const nav_msgs::OdometryConstPtr &msg, int drone_id)
 
 
 int comp_time_count = 0;
+//Codex: Optional deterministic obstacle input; empty clouds explicitly remove prior objects.
+void evaluationDynamicCallback(const sensor_msgs::PointCloud2ConstPtr &_message)
+{
+    if (_message->header.frame_id != "world" || _message->header.stamp.isZero())
+    {
+        ROS_ERROR("Evaluation dynamic cloud requires world coordinates and a nonzero input stamp");
+        return;
+    }
+    pcl::fromROSMsg(*_message, evaluation_dynamic_points);
+    evaluation_dynamic_stamp = _message->header.stamp;
+}
+
 void renderSensedPoints(const ros::TimerEvent& event)
 {
   ros::Time t1 = ros::Time::now();
 
   if (!has_odom)
+    return;
+  //Codex: Do not render a pose with obstacles from a different input frame.
+  if (evaluation_dynamic_cloud && (evaluation_dynamic_stamp != odom_.header.stamp || evaluation_rendered_stamp == odom_.header.stamp))
     return;
 
   Eigen::Quaternionf q;
@@ -605,6 +636,11 @@ void renderSensedPoints(const ros::TimerEvent& event)
       // dynamic_input_points = dynamic_input_points + otheruav_points[i];
     }
     dynamic_input_points = dynamic_input_points + dynobj_points_vis; 
+    if (evaluation_dynamic_cloud)
+    {
+        dynamic_input_points += evaluation_dynamic_points;
+        time_frominit = odom_.header.stamp.toSec();
+    }
 
     if(dynamic_input_points.points.size() > 0)
     {
@@ -615,7 +651,7 @@ void renderSensedPoints(const ros::TimerEvent& event)
     sensor_msgs::PointCloud2 dynamic_input_points_pcd;
     pcl::toROSMsg(dynamic_input_points, dynamic_input_points_pcd);
     dynamic_input_points_pcd.header.frame_id = "world";
-    dynamic_input_points_pcd.header.stamp = ros::Time::now();
+    dynamic_input_points_pcd.header.stamp = evaluation_dynamic_cloud ? time_stamp_ : ros::Time::now();
     pub_dyncloud.publish(dynamic_input_points_pcd);
 
     // dynamic_input_points = otheruav_points_vis + dyn_points_vis; 
@@ -650,6 +686,8 @@ void renderSensedPoints(const ros::TimerEvent& event)
     local_map_pcd.header.stamp = time_stamp_;
     local_map_pcd.header.frame_id = "world";
     pub_cloud.publish(local_map_pcd);
+    if (evaluation_dynamic_cloud)
+        evaluation_rendered_stamp = time_stamp_;
 
     Eigen::Matrix4f sensor2world;
       sensor2world <<
@@ -901,6 +939,9 @@ int main(int argc, char** argv)
   // subscribe point cloud
 //   global_map_sub = nh.subscribe("global_map", 1, rcvGlobalPointCloudCallBack);
   odom_sub = nh.subscribe("odometry", 50, rcvOdometryCallbck);
+  nh.param("evaluation_dynamic_cloud", evaluation_dynamic_cloud, false);
+  if (evaluation_dynamic_cloud)
+      evaluation_dynamic_sub = nh.subscribe("evaluation_dynamic_cloud", 1, evaluationDynamicCallback);
 
   // publisher depth image and color image
 //   pub_dyncloud = nh.advertise<sensor_msgs::PointCloud2>("/pcl_render_node/dyn_cloud", 10);
@@ -939,7 +980,7 @@ int main(int argc, char** argv)
   collision_checktime_file.open(pkg_path.c_str(), std::ios_base::out);
 
 
-//   sensor2body << 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0;
+  sensor2body << 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0;
 
   ros::Rate rate(100);
   bool status = ros::ok();

@@ -43,6 +43,7 @@
 #include <vector>
 #include <string>
 #include <numeric>
+#include <stdexcept>
 
 #include "FOV_Checker/FOV_Checker.h"
 #include <tr1/unordered_map>
@@ -84,6 +85,9 @@ class opengl_pointcloud_render
     float v0 = width*0.5;
     glm::mat4 projection, view;
     unsigned int VBO, VAO, EBO;
+    unsigned int sensor_framebuffer_ = 0;
+    unsigned int sensor_colorbuffer_ = 0;
+    unsigned int sensor_depthbuffer_ = 0;
     GLFWwindow* window;
     Shader ourShader;
 
@@ -297,6 +301,8 @@ void opengl_pointcloud_render::read_pointcloud_fromfile(std::string map_filename
         return ;
     }
     glfwMakeContextCurrent(window);
+    //Codex: Sensor rendering must not wait for the hidden window's display refresh.
+    glfwSwapInterval(0);
     // glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     // glfwSetCursorPosCallback(window, mouse_callback);
     // glfwSetScrollCallback(window, scroll_callback);
@@ -311,6 +317,21 @@ void opengl_pointcloud_render::read_pointcloud_fromfile(std::string map_filename
         std::cout << "Failed to initialize GLAD" << std::endl;
         return ;
     }
+
+    //Codex: Render into an explicit offscreen target; hidden-window swaps can throttle LiDAR to the desktop refresh.
+    glGenFramebuffers(1, &sensor_framebuffer_);
+    glBindFramebuffer(GL_FRAMEBUFFER, sensor_framebuffer_);
+    glGenRenderbuffers(1, &sensor_colorbuffer_);
+    glBindRenderbuffer(GL_RENDERBUFFER, sensor_colorbuffer_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, sensor_colorbuffer_);
+    glGenRenderbuffers(1, &sensor_depthbuffer_);
+    glBindRenderbuffer(GL_RENDERBUFFER, sensor_depthbuffer_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, sensor_depthbuffer_);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        throw std::runtime_error("MARSIM offscreen framebuffer is incomplete");
+    glViewport(0, 0, width, height);
 
     // configure global opengl state
     // -----------------------------
@@ -453,6 +474,9 @@ opengl_pointcloud_render::~opengl_pointcloud_render(){
 
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
+    glDeleteRenderbuffers(1, &sensor_colorbuffer_);
+    glDeleteRenderbuffers(1, &sensor_depthbuffer_);
+    glDeleteFramebuffers(1, &sensor_framebuffer_);
     
     glfwTerminate();
 }
@@ -727,7 +751,7 @@ void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr
         // glDrawElements(GL_POINTS, g_eigen_pt_vec.size()/2, GL_UNSIGNED_INT, 0);
         glDrawElements(GL_POINTS, points_index_infov.size(), GL_UNSIGNED_INT, 0);
 
-        glfwSwapBuffers(window);
+        //Codex: The sensor reads its framebuffer directly; there is no displayed image to swap.
         glfwPollEvents();
 
         // system_clock::time_point t3 = system_clock::now();
