@@ -52,7 +52,7 @@ private:
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, geometry_msgs::PoseStamped>
       SyncPolicyImagePose;
   typedef shared_ptr<message_filters::Synchronizer<SyncPolicyImagePose>> SynchronizerImagePose;
-  typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2,
+  typedef message_filters::sync_policies::ExactTime<sensor_msgs::PointCloud2,
                                                           geometry_msgs::PoseStamped>
       SyncPolicyCloudPose;
   typedef shared_ptr<message_filters::Synchronizer<SyncPolicyCloudPose>> SynchronizerCloudPose;
@@ -98,6 +98,10 @@ private:
   default_random_engine eng_;
 
   ros::Time map_start_time_;
+  ros::Time evaluation_cloud_stamp_, evaluation_pose_stamp_;
+  std::size_t evaluation_pending_inputs_ = 0;
+  ros::Publisher evaluation_map_pub_;
+  void publishEvaluationTime(int stage, double milliseconds);
 
   friend SDFMap;
 };

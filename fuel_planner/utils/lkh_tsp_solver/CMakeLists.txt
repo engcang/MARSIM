@@ -35,3 +35,7 @@ add_executable( lkh_tsp
   ${SRCS}
 )
 target_link_libraries(lkh_tsp ${catkin_LIBRARIES} -lm)
+
+#Codex: This bundled C solver uses tentative globals; preserve its pre-GCC-10 common-symbol semantics.
+target_compile_options(lkh_tsp_solver PRIVATE $<$<COMPILE_LANGUAGE:C>:-fcommon>)
+target_compile_options(lkh_tsp PRIVATE $<$<COMPILE_LANGUAGE:C>:-fcommon>)

@@ -1,3 +1,5 @@
+#include <chrono>
+#include <std_msgs/Float64MultiArray.h>
 #include <plan_env/sdf_map.h>
 #include <plan_env/map_ros.h>
 
@@ -19,6 +21,7 @@ void MapROS::setMap(SDFMap* map) {
 }
 
 void MapROS::init() {
+  evaluation_map_pub_ = node_.advertise<std_msgs::Float64MultiArray>("/evaluation/fuel_map_profile", 100);
   node_.param("map_ros/fx", fx_, -1.0);
   node_.param("map_ros/fy", fy_, -1.0);
   node_.param("map_ros/cx", cx_, -1.0);
@@ -85,8 +88,8 @@ void MapROS::init() {
 }
 
 void MapROS::visCallback(const ros::TimerEvent& e) {
-  publishMapLocal();
-  if (show_all_map_) {
+  if (map_local_pub_.getNumSubscribers() || map_local_inflate_pub_.getNumSubscribers()) publishMapLocal();
+  if (show_all_map_ && map_all_pub_.getNumSubscribers()) {
     // Limit the frequency of all map
     static double tpass = 0.0;
     tpass += (e.current_real - e.last_real).toSec();
@@ -104,6 +107,7 @@ void MapROS::visCallback(const ros::TimerEvent& e) {
 
 void MapROS::updateESDFCallback(const ros::TimerEvent& /*event*/) {
   if (!esdf_need_update_) return;
+  const auto evaluation_started = std::chrono::steady_clock::now();
   auto t1 = ros::Time::now();
 
   map_->updateESDF3d();
@@ -113,6 +117,8 @@ void MapROS::updateESDFCallback(const ros::TimerEvent& /*event*/) {
   esdf_time_ += (t2 - t1).toSec();
   max_esdf_time_ = max(max_esdf_time_, (t2 - t1).toSec());
   esdf_num_++;
+  publishEvaluationTime(1, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - evaluation_started).count());
+  evaluation_pending_inputs_ = 0;
   if (show_esdf_time_)
     ROS_WARN("ESDF t: cur: %lf, avg: %lf, max: %lf", (t2 - t1).toSec(), esdf_time_ / esdf_num_,
              max_esdf_time_);
@@ -155,6 +161,10 @@ void MapROS::depthPoseCallback(const sensor_msgs::ImageConstPtr& img,
 
 void MapROS::cloudPoseCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                                const geometry_msgs::PoseStampedConstPtr& pose) {
+  const auto evaluation_started = std::chrono::steady_clock::now();
+  evaluation_cloud_stamp_ = msg->header.stamp;
+  evaluation_pose_stamp_ = pose->header.stamp;
+  ++evaluation_pending_inputs_;
   camera_pos_(0) = pose->pose.position.x;
   camera_pos_(1) = pose->pose.position.y;
   camera_pos_(2) = pose->pose.position.z;
@@ -171,6 +181,18 @@ void MapROS::cloudPoseCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     esdf_need_update_ = true;
     local_updated_ = false;
   }
+  publishEvaluationTime(0, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - evaluation_started).count());
+}
+
+//Codex: Input fusion and the asynchronous ESDF update are separate stages, not a sum presented as callback latency.
+void MapROS::publishEvaluationTime(int stage, double milliseconds) {
+  std_msgs::Float64MultiArray profile;
+  profile.layout.dim.resize(1);
+  profile.layout.dim[0].label = "scan_stamp,pose_stamp,stage,compute_ms,inputs_since_esdf";
+  profile.data = {evaluation_cloud_stamp_.toSec(), evaluation_pose_stamp_.toSec(), static_cast<double>(stage), milliseconds, static_cast<double>(evaluation_pending_inputs_)};
+  profile.layout.dim[0].size = profile.data.size();
+  profile.layout.dim[0].stride = profile.data.size();
+  evaluation_map_pub_.publish(profile);
 }
 
 void MapROS::proessDepthImage() {
@@ -239,21 +261,8 @@ void MapROS::publishMapAll() {
   pcl::toROSMsg(cloud1, cloud_msg);
   map_all_pub_.publish(cloud_msg);
 
-  // Output time and known volumn
-  double time_now = (ros::Time::now() - map_start_time_).toSec();
-  double known_volumn = 0;
+  //Codex: Coverage is recorded by the common evaluator; do not scan the map again or write to an upstream personal path.
 
-  for (int x = map_->mp_->box_min_(0) /* + 1 */; x < map_->mp_->box_max_(0); ++x)
-    for (int y = map_->mp_->box_min_(1) /* + 1 */; y < map_->mp_->box_max_(1); ++y)
-      for (int z = map_->mp_->box_min_(2) /* + 1 */; z < map_->mp_->box_max_(2); ++z) {
-        if (map_->md_->occupancy_buffer_[map_->toAddress(x, y, z)] > map_->mp_->clamp_min_log_ - 1e-3)
-          known_volumn += 0.1 * 0.1 * 0.1;
-      }
-
-  ofstream file("/home/boboyu/workspaces/plan_ws/src/fast_planner/exploration_manager/resource/"
-                "curve1.txt",
-                ios::app);
-  file << "time:" << time_now << ",vol:" << known_volumn << std::endl;
 }
 
 void MapROS::publishMapLocal() {

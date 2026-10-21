@@ -1,4 +1,5 @@
 <launch>
+  <arg name="parameter_file" default=""/>
   <arg name="map_size_x_"/>
   <arg name="map_size_y_"/>
   <arg name="map_size_z_"/>
@@ -197,6 +198,8 @@
     <param name="bspline/limit_acc" value="$(arg max_acc)" type="double"/>
     <param name="bspline/limit_ratio" value="1.1" type="double"/>
 
+    <!-- Codex: Optional experiment overrides after native defaults; preserve native behavior when omitted. -->
+    <rosparam if="$(eval arg('parameter_file') != '')" command="load" file="$(arg parameter_file)"/>
   </node>
 
 </launch>
